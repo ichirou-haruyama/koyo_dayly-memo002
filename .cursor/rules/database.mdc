@@ -1,0 +1,164 @@
+説明
+作業日報アプリで使用するテーブル設計・初期データ（シーダー）・関連ルールを定義する。
+## 1. 目的
+- 作業日報（1日1レコード想定だが、複数レコードも許容）を保存する。
+- 日報に付随する往路・復路の移動情報を保存する。
+- 日報に紐づく「他作業員」を保存する。
+- 利用者のアカウントと権限（管理者/一般）を保存する。
+- 工事件名または工事IDをマスタとしても扱えるようにする。
+
+## 2. 想定DB
+- MariaDB 10.11 系（または MySQL 8 系）
+- 文字コード: utf8mb4
+- 照合順序: utf8mb4_unicode_ci
+- タイムゾーン: Asia/Tokyo
+
+## 3. テーブル一覧
+1. `users` … ログインユーザー
+2. `roles` … 権限マスタ（admin, manager, user など）
+3. `role_user` … (必要なら)複数ロール付与用の中間テーブル ※今回単一ロールなら `users.role_id` でも可
+4. `projects` … 工事件名/工事IDのマスタ（任意登録）
+5. `daily_reports` … 日報本体
+6. `daily_report_travels` … 日報にぶら下がる移動情報（往路/復路）
+7. `daily_report_members` … 日報にぶら下がる他作業員
+8. `password_resets` … Laravel 標準
+9. `failed_jobs` / `jobs` … Laravel 標準（必要に応じて）
+
+※簡略化したい場合は 3. と 8〜9. は削ってよい。
+
+---
+
+## 4. テーブル定義（ドラフト）
+
+### 4.1 users
+| カラム名 | 型 | NotNull | 説明 |
+|---------|----|---------|------|
+| id | bigint unsigned PK | ✔ | |
+| name | varchar(100) | ✔ | 氏名 |
+| email | varchar(255) | ✔, unique | ログイン用メールアドレス |
+| password | varchar(255) | ✔ | 管理側で発行したハッシュ値を保存 |
+| role_id | tinyint unsigned | ✔ | 1=admin, 2=manager, 3=user など |
+| is_active | boolean | ✔ (default 1) | 無効ユーザーをログイン不可にする |
+| created_at | timestamp |  |  |
+| updated_at | timestamp |  |  |
+
+- パスワードは利用者が「自分で登録」するのではなく、管理側で発行し設定する想定。
+- メール認証はあとから有効化できるようにしておく。
+
+### 4.2 roles
+| カラム名 | 型 | 説明 |
+|---------|----|------|
+| id | tinyint unsigned PK | |
+| name | varchar(50) | 例: admin / manager / user |
+| description | varchar(255) | 任意説明 |
+
+初期データ（Seeder）:
+- 1, "admin", "システム管理者"
+- 2, "manager", "日報閲覧・集計ができる"
+- 3, "user", "日報入力のみ"
+
+### 4.3 projects
+| カラム名 | 型 | 説明 |
+|---------|----|------|
+| id | bigint unsigned PK | |
+| code | varchar(50) | 工事ID。手入力でもOK |
+| name | varchar(255) | 工事件名 |
+| is_active | boolean default 1 | |
+| created_at | timestamp | |
+| updated_at | timestamp | |
+
+- 日報入力時は「工事件名/IDを手入力」＋「マスタから選択」の両方を許可する。
+- マスタに存在しない場合は `daily_reports` 側に文字列を持たせておく。
+
+### 4.4 daily_reports
+日報本体。ユーザーがスマホやPCで最初に入力するテーブル。
+
+| カラム名 | 型 | NotNull | 説明 |
+|---------|----|---------|------|
+| id | bigint unsigned PK | ✔ | |
+| user_id | bigint unsigned FK -> users.id | ✔ | 入力者 |
+| report_date | date | ✔ | 入力日（実作業日） |
+| project_id | bigint unsigned nullable FK -> projects.id |  | マスタから選んだ場合 |
+| project_name | varchar(255) nullable |  | 手入力した工事件名 |
+| project_code | varchar(50) nullable |  | 手入力した工事ID |
+| work_start_time | time | ✔ | 作業開始時刻 |
+| work_end_time | time | ✔ | 作業終了時刻 |
+| comment | varchar(200) |  | 作業内容。200文字以内バリデーション必須 |
+| created_by | bigint unsigned nullable |  | 管理者が代理入力した場合に保持 |
+| updated_by | bigint unsigned nullable |  | |
+| created_at | timestamp |  | |
+| updated_at | timestamp |  | |
+
+**ポイント**
+- 「工事件名」か「工事ID」のいずれかは最低1つは入るようにバリデーションする。
+- コメントは200文字制限をサーバー側/Laravel側で行う。
+
+### 4.5 daily_report_travels
+往路・復路の移動情報を1レコードずつ持つ。  
+4,5,6の仕様をここで吸収する。
+
+| カラム名 | 型 | NotNull | 説明 |
+|---------|----|---------|------|
+| id | bigint unsigned PK | ✔ | |
+| daily_report_id | bigint unsigned FK -> daily_reports.id | ✔ | |
+| direction | enum('outbound','return') | ✔ | outbound=往路, return=復路 |
+| depart_time | time | ✔ | 移動開始時間 |
+| arrive_time | time | ✔ | 移動完了時間 |
+| distance_km | decimal(6,2) nullable |  | 移動距離(km) |
+| use_highway | boolean | ✔ default 0 | 高速利用の有無 |
+| memo | varchar(100) nullable |  | 任意メモ |
+
+**運用ルール**
+- 移動がない日報ではこのテーブルのレコードを作成しない。
+- 往復あれば2レコード作る。
+
+### 4.6 daily_report_members
+「自分以外がいる場合の他作業員の登録」を行うテーブル。
+
+| カラム名 | 型 | NotNull | 説明 |
+|---------|----|---------|------|
+| id | bigint unsigned PK | ✔ | |
+| daily_report_id | bigint unsigned FK -> daily_reports.id | ✔ | |
+| member_name | varchar(100) | ✔ | 他作業員の氏名（手入力） |
+| member_user_id | bigint unsigned nullable |  | 社員マスタ(users)にいる場合は紐付け |
+| work_start_time | time nullable |  | 一緒に動いた時間を残したい場合 |
+| work_end_time | time nullable |  | |
+| note | varchar(100) nullable |  | 役割など |
+
+**運用ルール**
+- 最低1人だけなら1レコード。
+- 複数人は複数レコード。
+
+---
+
+## 5. インデックス/ユニーク
+- `users.email` に UNIQUE
+- `daily_reports` は `(report_date, user_id)` にユニークを貼るかは運用次第。今回は複数回入力を許容して **ユニークにはしない**。
+- `daily_report_travels.daily_report_id` にインデックス
+- `daily_report_members.daily_report_id` にインデックス
+
+---
+
+## 6. 初期データ（Seeder）
+- `roles` に admin / manager / user を作成
+- `users` に以下を作成
+  - 管理者:  
+    - name: "システム管理者"  
+    - email: "admin@example.com"  
+    - password: bcrypt("AdminPass!123")（実運用は変更）  
+    - role_id: 1
+  - 一般ユーザー(テスト):  
+    - name: "作業員A"  
+    - email: "worker1@example.com"  
+    - password: bcrypt("WorkerPass!123")  
+    - role_id: 3
+
+- `projects` にテスト用
+  - code: "PRJ-0001", name: "穀物プラント定期点検"
+  - code: "PRJ-0002", name: "乾燥機更新工事"
+
+---
+
+## 7. 管理画面での一覧取得条件
+- 管理/マネージャーユーザーは `daily_reports` を日付範囲・ユーザー・工事IDで検索できるようにする。
+- 一覧表示時に `users.name`, `projects.code`, `projects.name` をJOINで取れるようにしておく。

@@ -1,0 +1,79 @@
+説明
+Docker を使った各開発者のローカル環境ルール、.env の基本形、TablePlus での接続情報などを定義する。
+## 1. ベース
+- PC/スマホ入力対応アプリのため、APP_URL を https で動かす想定を残す。
+- 開発時は http://localhost でOK。
+- 開発で使うエディタは Cursor を前提とする。
+
+## 2. Docker 想定
+- PHP/Laravel コンテナ: php:8.3-fpm ベース or laravel/sail
+- Webサーバ: nginx:stable
+- DB: mariadb:10.11
+- Network: `laravel-net`
+- ボリューム: `db-data` をDB用に
+
+### 2.1 Docker Compose でのサービス名（例）
+- app: Laravelアプリ
+- web: nginx
+- db: mariadb
+
+### 2.2 DB コンテナ設定
+- MARIADB_ROOT_PASSWORD: `root`
+- MARIADB_DATABASE: `workreport`
+- MARIADB_USER: `workreport`
+- MARIADB_PASSWORD: `workreport`
+- ポート: ホスト 3306 -> コンテナ 3306
+
+※以前発生した `No such image: mariadb:11` エラーを避けるため、**タグは10.11系で固定**すること。
+
+## 3. .env の基本形
+```env
+APP_NAME="WorkReport"
+APP_ENV=local
+APP_KEY= # php artisan key:generate で作成
+APP_DEBUG=true
+APP_URL=http://localhost
+
+DB_CONNECTION=mysql
+DB_HOST=db
+DB_PORT=3306
+DB_DATABASE=workreport
+DB_USERNAME=workreport
+DB_PASSWORD=workreport
+
+# 認証でメールを使う場合（後から実装）
+MAIL_MAILER=log
+MAIL_FROM_ADDRESS="noreply@example.com"
+MAIL_FROM_NAME="WorkReport"
+ローカル開発者は DB_HOST=127.0.0.1 としてもよいが、Docker 内の Laravel からは db を使う。
+
+Cursor が自動生成するコードで DB_HOST=localhost になっていたら db に修正する。
+
+4. TablePlus 接続ルール
+Name: WorkReport Local
+
+Host: 127.0.0.1
+
+Port: 3306
+
+User: workreport
+
+Password: workreport
+
+Database: workreport
+
+Encoding: utf8mb4
+
+5. マイグレーション/シーダー運用
+新しいテーブルを作るときは php artisan make:migration を使う。
+
+マイグレーションは基本的に「追加」のみで「書き換え」はしない。変更が必要なときは追加マイグレーションを作る。
+
+初期データは database/seeders に作成し、php artisan db:seed で投入できるようにする。
+
+6. 環境ごとの違い
+local: APP_DEBUG=true / MAILER=log
+
+staging: APP_DEBUG=false / DBは別サーバー / テストユーザーを固定で作る
+
+production: 管理者が発行したアカウントのみログイン可にして、/register を無効化する

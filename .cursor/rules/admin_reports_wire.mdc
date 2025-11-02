@@ -1,0 +1,294 @@
+---
+alwaysApply: true
+---
+管理用ID（admin / manager ロール）が利用する「日報一覧・検索画面」のワイヤーとUI要素・APIの入出力を細かく定義する。
+## 1. 画面の目的
+- 管理者・管理者相当（role_id=1,2）が、全ユーザーの作業日報を「まとめて」「条件で絞り込んで」「詳細を開ける」ようにする。
+- スマホでも最低限使えるが、基本はPCブラウズを想定した横長テーブル。
+- 一覧はページネーションする（デフォルト 20件 / ページ）。
+
+## 2. URL / 権限
+- URL: `/admin/reports`
+- HTTP: GET
+- 認証: 必須
+- 権限: `auth()->user()->role_id in [1,2]` のみ入室可能
+- 許可されない場合は 403
+
+## 3. 画面レイアウト（上から順に）
+1. **ページタイトル行**
+   - 左: 「日報一覧（管理）」というタイトル
+   - 右: 「CSV出力」ボタン（後回し可、ダミーでもよい）
+
+2. **検索・フィルタブロック**
+   - 横方向に並べる（PC）。スマホでは縦積み。
+   - フィルタ項目:
+     1. 日付From（date）
+     2. 日付To（date）
+     3. 入力者（select or autocomplete）
+     4. 工事ID / 工事件名（text；部分一致）
+     5. 移動ありのみ（checkbox）
+     6. 高速利用ありのみ（checkbox）
+     7. ボタン: 「検索する」「クリア」
+   - 検索は GET パラメータで行い、ページネーションにも引き継ぐ。
+
+3. **一覧テーブル / カード**
+   - PC: テーブル表示
+   - スマホ: 1件ずつカード表示
+   - テーブルのカラム:
+     1. 日付（report_date）
+     2. 入力者（users.name）
+     3. 工事ID / 工事件名（優先表示：project_code -> project_name -> projects.name）
+     4. 作業時間（work_start_time ～ work_end_time）
+     5. 移動（アイコンまたは「往復あり」「往路のみ」など）
+     6. 高速（有/無）
+     7. コメント（先頭30〜40文字で省略）
+     8. 操作（「詳細」「編集」へのリンク）
+
+4. **ページネーション**
+   - Laravel標準の `{{ $reports->links() }}` を使う
+   - 検索条件はページ送りしても維持する
+
+## 4. 検索仕様 詳細
+
+### 4.1 入力パラメータ（例）
+- `GET /admin/reports?date_from=2025-11-01&date_to=2025-11-02&user_id=3&keyword=プラント&has_travel=1&has_highway=0`
+- パラメータ一覧:
+  - `date_from`: yyyy-mm-dd
+  - `date_to`: yyyy-mm-dd
+  - `user_id`: users.id
+  - `keyword`: 工事ID / 工事件名 / コメントに対する部分一致
+  - `has_travel`: 1 のとき、travelレコードが1件以上ある日報だけ
+  - `has_highway`: 1 のとき、travelレコードのどれかで `use_highway = 1` がある日報だけ
+
+### 4.2 検索項目ごとの挙動
+- 日付From/To:
+  - `report_date >= date_from` かつ `report_date <= date_to`
+  - どちらかだけ入力されたら片側だけ条件にする
+- 入力者:
+  - users テーブルを SELECT してセレクトボックス化（activeユーザーのみ）
+- キーワード:
+  - 以下のいずれかに LIKE
+    - `daily_reports.project_code`
+    - `daily_reports.project_name`
+    - `projects.code`
+    - `projects.name`
+    - `daily_reports.comment`
+- 移動あり:
+  - `exists (select 1 from daily_report_travels where daily_report_id = daily_reports.id)`
+- 高速利用あり:
+  - `exists (select 1 from daily_report_travels where daily_report_id = daily_reports.id and use_highway = 1)`
+
+### 4.3 並び順
+- デフォルト: `report_date desc, daily_reports.id desc`
+- 管理者は最新の日報から確認したい前提
+
+## 5. テーブル行の表示ルール
+
+### 5.1 日付
+- `2025/11/02 (日)` のように曜日も表示すると管理者が見やすい
+- Blade例: `{{ $report->report_date->format('Y/m/d (D)') }}`
+
+### 5.2 工事ID / 工事件名
+- 優先順で表示:
+  1. `$report->project_code` があれば `PRJ-001` のように表示
+  2. なければ `$report->project_name`
+  3. それもなければ `$report->project?->code . ' ' . $report->project?->name`
+- 表示幅を狭めたくないので PC では2行表示を許可する
+
+### 5.3 移動の表示
+- travelレコードが0件 → 「-」またはグレーのアイコン
+- travelレコードが1件 → 「移動1」または往路アイコン
+- travelレコードが2件以上 → 「往復」または ↔︎ アイコン
+- `use_highway=1` が含まれている場合は小さく「高」アイコンを付けるが、カラムでも別途「有」と出す
+
+### 5.4 コメント
+- 200文字まで入るが、一覧では40文字程度で切る  
+  例: `Str::limit($report->comment, 40)`  
+- フルは詳細画面で見る
+
+### 5.5 操作ボタン
+- 「詳細を見る」: `/admin/reports/{id}`
+- 「編集」: `/admin/reports/{id}/edit`
+  - 編集は admin のみ許可、manager は詳細のみでもよい
+- 将来的に「複製して新規作成」などを追加しやすいように `<div class="flex gap-2">` で包んでおく
+
+## 6. 詳細画面（簡易ワイヤー）
+- URL: `/admin/reports/{id}`
+- 表示内容:
+  - ヘッダ: 日付 / 入力者 / 工事ID・工事件名
+  - 作業時間: 09:00 ～ 17:30
+  - コメント（改行保持）
+  - 【移動情報】（daily_report_travelsをテーブルで）
+    - 区分(往路/復路)
+    - 出発/到着
+    - 距離(km)
+    - 高速(有/無)
+  - 【他作業員】（daily_report_membersをリストで）
+    - 氏名
+    - 備考
+  - 戻るボタン: `/admin/reports` へ
+
+## 7. Livewire/Volt での構成（推奨）
+- コンポーネント名: `Admin/Reports/Index`
+  - プロパティ:
+    - `public $dateFrom`
+    - `public $dateTo`
+    - `public $userId`
+    - `public $keyword`
+    - `public $hasTravel = false`
+    - `public $hasHighway = false`
+  - メソッド:
+    - `search()` … 1ページ目に戻して再検索
+    - `resetFilters()` … 全てクリア
+  - `render()` でクエリを組み立てて paginate
+- ビューでの配置順:
+  1. タイトル
+  2. フィルタフォーム（グリッド2〜3列）
+  3. 結果テーブル
+  4. ページネーション
+  5. 件数表示（「全120件中 1〜20件を表示」）
+
+## 8. モバイル時の折りたたみルール
+- 画面幅 < 768px のとき:
+  - フィルタはアコーディオン化（「検索条件を開く▼」）
+  - テーブルは1行1カードに変換
+    - 1行目: 日付 + 入力者
+    - 2行目: 工事ID/工事件名
+    - 3行目: 作業時間 + 移動アイコン + 高速
+    - 4行目: コメント要約
+    - 5行目: 操作ボタン
+
+## 9. パフォーマンス
+- 一覧で travels / members を全部 JOIN すると重くなるので、一覧では travels の有無だけをサブクエリ/exists で取る
+- 詳細画面ではリレーションを with() でまとめて取得する
+  - 例: `DailyReport::with(['travels', 'members', 'user', 'project'])->find($id);`
+
+## 10. 権限チェック
+- 一覧・詳細に入る前に必ず
+  - `if (!in_array(auth()->user()->role_id, [1, 2])) abort(403);`
+- ビュー側でも
+  - `@if(auth()->user()->role_id === 1)` → 編集ボタン表示
+  - `@else` → 詳細のみ
+
+# admin_reports_wire.mdc 追記分
+
+## 11. CSVエクスポート仕様
+
+### 11.1 目的
+- 管理者が日報一覧で絞り込んだ結果をそのままCSVとしてダウンロードできるようにする。
+- 経理・総務側で「移動距離・高速利用の有無」を見たい想定があるため、これらの値を1行でわかる形にする。
+- CSVはUTF-8 / BOM付きで出力しておくとExcel（Windows）で開きやすい。
+
+### 11.2 エクスポートのトリガー
+- 画面右上の「CSV出力」ボタンを押すと、現在の検索条件（date_from, date_to, user_id, keyword, has_travel, has_highway）をクエリに含めた状態で `/admin/reports/export` にGETする。
+- エクスポートの権限は一覧と同じく `role_id in [1,2]` のみ。
+
+### 11.3 出力レコードの1行＝1日報
+- 基本単位は `daily_reports` の1レコード。
+- 日報に往路・復路の2レコードがぶら下がっていても、CSVは「1日報＝1行」で出す。
+- そのため、移動情報は「往路用カラム」「復路用カラム」を別に用意する。
+- 他作業員が複数いる場合は、1つのセルにカンマ区切りで入れる（シンプル版）。詳細展開したい場合は後述の「詳細版」を別エンドポイントにする。
+
+### 11.4 カラム定義（シンプル版・推奨）
+
+1. `report_id` … 日報ID（PK）
+2. `report_date` … 日付（YYYY-MM-DD）
+3. `weekday` … 曜日（例: 月, 火, …）
+4. `user_name` … 入力者名（users.name）
+5. `user_email` … 入力者メール（users.email）
+6. `project_code` … 工事ID（daily_reports.project_code または projects.code）
+7. `project_name` … 工事件名（daily_reports.project_name または projects.name）
+8. `work_start_time` … 作業開始（HH:MM）
+9. `work_end_time` … 作業終了（HH:MM）
+10. `work_minutes` … 作業時間(分) = end - start をサーバー側で算出
+11. `comment` … 作業内容（200字までだがCSVでは全文）
+12. `outbound_depart_time` … 往路 出発時刻（なければ空欄）
+13. `outbound_arrive_time` … 往路 到着時刻
+14. `outbound_distance_km` … 往路 距離(km, 小数2桁)
+15. `outbound_use_highway` … 往路 高速利用(1/0 または 有/無)
+16. `return_depart_time` … 復路 出発時刻
+17. `return_arrive_time` … 復路 到着時刻
+18. `return_distance_km` … 復路 距離(km)
+19. `return_use_highway` … 復路 高速利用(1/0 または 有/無)
+20. `members` … 他作業員名を「,」で連結（例: "Aさん,Bさん"）
+21. `created_at` … 日報の作成日時
+22. `updated_at` … 日報の更新日時
+
+- 12〜19 は `daily_report_travels` から direction='outbound' / 'return' をそれぞれ1件ずつ拾う。複数あった場合は最初の1件のみ。
+- 20 の他作業員は `daily_report_members` から `member_name` を全部取って文字列結合する。
+
+### 11.5 カラムの表示名（日本語ヘッダ例）
+- `日報ID`
+- `日付`
+- `曜日`
+- `入力者`
+- `メールアドレス`
+- `工事ID`
+- `工事件名`
+- `作業開始`
+- `作業終了`
+- `作業時間(分)`
+- `作業内容`
+- `往路_出発`
+- `往路_到着`
+- `往路_距離(km)`
+- `往路_高速`
+- `復路_出発`
+- `復路_到着`
+- `復路_距離(km)`
+- `復路_高速`
+- `他作業員`
+- `登録日時`
+- `更新日時`
+
+※ Cursor にコード生成させるときは「英語カラム名でexportして、Laravelのコレクションで日本語ヘッダに置き換える」と指示してもよい。
+
+### 11.6 詳細版（オプション）
+- 経理側で「往路が2回ある日」や「作業員が4人いる日」をどうしても行として欲しい場合は、**別エンドポイント**で「縦持ちCSV」を出す。
+- 例: `/admin/reports/export?mode=detail`
+- 詳細版では1日報＋1移動＋1作業員を1行にする（=同じreport_idが複数行に出る）
+- カラム例:
+  - report_id
+  - report_date
+  - user_name
+  - project_code
+  - project_name
+  - work_start_time
+  - work_end_time
+  - travel_direction
+  - travel_depart
+  - travel_arrive
+  - travel_distance
+  - travel_highway
+  - member_name
+- これによりピボットテーブルが組みやすくなる
+
+### 11.7 検索条件の引き継ぎ
+- 一覧画面で指定したパラメータをそのままCSVに渡す
+- Controller側のイメージ（擬似）:
+  ```php
+  public function export(Request $request)
+  {
+      $query = DailyReport::query()
+          ->with(['user','project','travels','members']);
+
+      // 一覧と同じフィルタ
+      $query = $this->applyFilters($query, $request);
+
+      $reports = $query->orderBy('report_date','desc')->get();
+
+      // コレクションをCSV化
+  }
+11.8 文字コード・改行
+文字コード: UTF-8(BOM付き)
+
+改行コード: LF もしくは CRLF（Windows向けにCRLFでも可）
+
+区切り文字: ,（カンマ）
+
+値にカンマが含まれる（作業内容・他作業員）場合は "..." で囲む
+
+11.9 権限
+CSV出力ボタンは role_id === 1 のときのみ表示、role_id === 2 は任意（会社ポリシーに合わせてON/OFF）
+
+Controller側でも再チェックして、権限がなければ403を返す
