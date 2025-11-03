@@ -1,0 +1,81 @@
+1. **ルールファイル名**  
+   `laravel.mdc`
+
+2. **説明**  
+   Laravel プロジェクト全体のルール。認証、ルーティング、バリデーション、コーディングスタイルなど。
+
+3. **内容**
+```md
+# laravel.mdc
+
+## 1. バージョン
+- Laravel 11 系を想定（10 系でも可。プロジェクト開始時に固定すること）
+
+## 2. 認証
+- Laravel Breeze または Laravel UI ではなく、**メールアドレス＋事前発行パスワード**でログインできるように改変する。
+- `/register` は公開しない。一般ユーザーの新規作成は「管理者のみ」が行う。
+- パスワードリセットはあってもよいが、社内運用なら「管理者が再発行する」運用でも可。
+- ログイン成功後のリダイレクト先は `/reports`（日報一覧または自分の日報一覧）。
+
+## 3. 認可(Authorization)
+- 権限は基本的に `role_id` で判定する。
+  - admin: すべてのユーザーの一覧・日報の閲覧/編集が可能
+  - manager: すべての日報の閲覧が可能だが、システムユーザー操作は不可
+  - user: 自分が作成した日報のみ閲覧/編集可能
+- コントローラでは `authorize()` または Policy を使い、ビュー側でも `@can` ディレクティブで出し分ける。
+
+## 4. ルーティング
+- `routes/web.php` に以下を定義する:
+
+  - 認証系
+    - GET `/login`
+    - POST `/login`
+    - POST `/logout`
+
+  - 日報系（認証必須）
+    - GET `/reports` … 自分の日報一覧（user向け）
+    - GET `/reports/create`
+    - POST `/reports`
+    - GET `/reports/{report}` … 詳細（自分のもののみ）
+    - GET `/reports/{report}/edit`
+    - PUT/PATCH `/reports/{report}`
+    - DELETE `/reports/{report}`
+
+  - 管理系（admin/managerのみ）
+    - GET `/admin/reports` … 全ユーザーの日報一覧＋検索
+    - GET `/admin/reports/{report}` … 詳細
+    - GET `/admin/users` … ユーザー管理
+    - POST `/admin/users` … 新規ユーザー作成（メール＋パスワード発行）
+    - PUT `/admin/users/{user}` … 権限変更/停止
+
+## 5. バリデーションルール（日報）
+- report_date: required, date
+- work_start_time: required, date_format:H:i
+- work_end_time: required, date_format:H:i, after:work_start_time
+- comment: nullable, string, max:200
+- 移動が入力された場合:
+  - depart_time: required_with:arrive_time
+  - arrive_time: required_with:depart_time, after:depart_time
+  - distance_km: numeric, min:0
+  - use_highway: boolean
+
+## 6. モデルとリレーション
+- User hasMany DailyReport
+- DailyReport belongsTo User
+- DailyReport hasMany DailyReportTravel
+- DailyReport hasMany DailyReportMember
+- DailyReport belongsTo Project (nullable)
+- Project hasMany DailyReport
+
+## 7. フロント（レスポンシブ）
+- スマホで現場入力する前提なので、Blade でも Livewire でも **1画面1目的**で作る。
+- 時刻入力は `<input type="time">` を基本とし、スマホ入力の負荷を下げる。
+
+## 8. ログ/監査
+- 日報の作成・更新時に `auth()->id()` を `created_by` / `updated_by` に保存する。
+- 誰が代理で入力したかを追跡できるようにする。
+
+## 9. コーディングスタイル
+- PSR-12 準拠
+- コントローラは細く（Fat Model, Thin Controller）
+- フォームのバリデーションは FormRequest を使う：`StoreDailyReportRequest`, `UpdateDailyReportRequest`
